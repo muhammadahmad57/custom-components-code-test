@@ -137,7 +137,27 @@ export default {
       // Your implementation here
       // Should:
       // 1. Initialize WebContainer (if not already initialized)
+      if (!window.webContainerInstance) {
+        window.webContainerInstance = await WebContainer.boot();
+      }
+
       // 2. Compile the Vue SFC to JavaScript
+
+      // Validate Component Format
+      const scriptMatch = source.match(/<script>([/s/S]*)<\/script>/);
+      const templateMatch = source.match(/<template>([/s/S]*)<\/template>/);
+      if(!scriptMatch || !templateMatch) {
+        console.error("Invalid component format");
+        return;
+      }
+
+      // Extracting JavaScript logic and make it executable
+      const scriptContent = scriptMatch[1].replace("export default","return ");
+      const componentOptions = new Function(scriptContent)();
+
+      // Attaching template HTML to the component options
+      componentOptions.template = templateMatch[1].trim();
+
       // 3. Extract props from the component
       // 4. Mount the component with the current prop values
 
