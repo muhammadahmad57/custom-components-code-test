@@ -42,7 +42,7 @@ Compile a component to see props schema</pre>
 </template>
 
 <script>
-import { ref, onMounted } from "vue";
+import { ref, onMounted, createApp, h } from "vue";
 import CodeMirror from "codemirror";
 import "codemirror/lib/codemirror.css";
 import "codemirror/mode/vue/vue.js";
@@ -154,6 +154,15 @@ export default {
       }
 
       // 4. Mount the component with the current prop values
+      const mountEl = componentMount.value;
+      mountEl.innerHTML = "";
+
+      const app = createApp({
+        render() {
+          return h(componentOptions, propValues.value);
+        },
+      });
+      app.mount(mountEl);
     }
 
     // TODO 2: Extract props from Vue component and convert to JSON Schema
