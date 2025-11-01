@@ -10,9 +10,17 @@ window.$mvt = {
     // Your implementation here (localStorage is fine)
     getItem: async (key) => {
       // Implement localStorage get
+      const value = localStorage.getItem(key);
+      if (value) {
+        return JSON.parse(value);
+      }
+      else {
+        return null
+      }
     },
     setItem: async (key, value) => {
       // Implement localStorage set
+      localStorage.setItem(key, JSON.stringify(value));
     },
   },
 }
