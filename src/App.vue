@@ -228,7 +228,6 @@ export default {
         schema.properties[name] = propSchema;
       }
 
-      // Printing the schema to the console
       console.log("Schema (JSON):", JSON.stringify(schema, null, 2));
       return schema;
     }

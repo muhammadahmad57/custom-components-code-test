@@ -60,4 +60,14 @@ A sample Vue component is provided in the CodeMirror editor to help you get star
 
 ## Your Notes
 
-_Add your architectural decisions, approach, and any relevant notes here._
+
+_Used the window object to initialize the WebContainer once to avoid reinitialization delays across components.
+Kept the base architecture mostly the same.
+
+For compilation, converted the script content into an executable function using new Function() to return the component’s options object, then attached the extracted template before rendering.
+
+In prop extraction, located the props object and used eval() to parse it into a JavaScript object.
+Applied a typeMap to convert Vue prop types to JSON Schema types.
+
+Used createApp and h to dynamically render the component in the preview area.
+Implemented $mvt.store using localStorage for persistence._
