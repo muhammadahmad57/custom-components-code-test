@@ -42,7 +42,7 @@ Compile a component to see props schema</pre>
 </template>
 
 <script>
-import { ref, onMounted, createApp, h } from "vue";
+import { ref, onMounted, createApp, h, reactive, computed, watch, onUnmounted, defineComponent } from "vue";
 import CodeMirror from "codemirror";
 import "codemirror/lib/codemirror.css";
 import "codemirror/mode/vue/vue.js";
@@ -119,31 +119,165 @@ export default {
       const source = editor.getValue();
       console.log("Compiling component:", source);
 
-      // Your implementation here
-      // Should:
       // 1. Initialize WebContainer (if not already initialized)
       if (!window.webContainerInstance) {
         window.webContainerInstance = await WebContainer.boot();
+        await window.webContainerInstance.mount({
+          'package.json': {
+            file: {
+              contents: JSON.stringify({
+                name: 'vue-compiler',
+                type: 'module',
+                dependencies: {
+                  '@vue/compiler-sfc': '^3.4.0',
+                  'vue': '^3.4.0'
+                }
+              }, null, 2)
+            }
+          },
+          'compile.js': {
+            file: {
+              contents: `
+import { readFile } from 'node:fs/promises';
+import { compile } from '@vue/compiler-sfc';
+
+const source = await readFile('./component.vue', 'utf-8');
+const result = compile(source, {
+  filename: 'component.vue',
+  sourceMap: false
+});
+
+// Output the compiled code
+console.log(JSON.stringify({
+  code: result.code,
+  errors: result.errors?.map(e => e.message) || []
+}));
+`
+            }
+          }
+        });
+
+        // Install dependencies
+        const installProcess = await window.webContainerInstance.spawn('npm', ['install']);
+        await installProcess.exit;
       }
 
-      // 2. Compile the Vue SFC to JavaScript
+      const container = window.webContainerInstance;
 
-      // Validate Component Existence
-      const scriptMatch = source.match(/<script>([\s\S]*)<\/script>/);
-      const templateMatch = source.match(/<template>([\s\S]*)<\/template>/);
-      if (!scriptMatch || !templateMatch) {
-        console.error("Invalid component format");
+      // 2. Write the Vue component file to WebContainer
+      await container.fs.writeFile('/component.vue', source);
+
+      // 3. Compile the Vue SFC using WebContainer
+      const compileProcess = await container.spawn('node', ['compile.js']);
+      
+      let compiledOutput = '';
+      compileProcess.output.pipeTo(
+        new WritableStream({
+          write(data) {
+            compiledOutput += data;
+          }
+        })
+      );
+
+      const exitCode = await compileProcess.exit;
+      
+      if (exitCode !== 0) {
+        console.error('Compilation failed:', compiledOutput);
+        alert('Compilation failed. Check console for details.');
         return;
       }
 
-      // Extracting JavaScript logic and make it executable
-      const scriptContent = scriptMatch[1].replace("export default", "return ");
-      const componentOptions = new Function(scriptContent)();
+      // Parse the compiled output
+      let compiledResult;
+      try {
+        compiledResult = JSON.parse(compiledOutput.trim());
+      } catch (e) {
+        // Try to extract JSON from the output (might have extra logs)
+        const jsonMatch = compiledOutput.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          compiledResult = JSON.parse(jsonMatch[0]);
+        } else {
+          console.error('Failed to parse compilation output:', compiledOutput);
+          alert('Failed to parse compilation result.');
+          return;
+        }
+      }
 
-      // Attaching template HTML to the component options
-      componentOptions.template = templateMatch[1].trim();
+      if (compiledResult.errors && compiledResult.errors.length > 0) {
+        console.error('Compilation errors:', compiledResult.errors);
+        alert('Compilation errors: ' + compiledResult.errors.join(', '));
+        return;
+      }
 
-      // 3. Extract props from the component
+      // Evaluate the compiled code to get the component
+      let compiledCode = compiledResult.code;
+      
+      // Transform ES module imports to work in our context
+      // Map of Vue imports to their argument indices
+      const vueImportMap = {
+        'h': 0,
+        'createApp': 1,
+        'ref': 2,
+        'reactive': 3,
+        'computed': 4,
+        'watch': 5,
+        'onMounted': 6,
+        'onUnmounted': 7,
+        'defineComponent': 8
+      };
+      
+      // Replace import statements with variable assignments from function arguments
+      compiledCode = compiledCode.replace(
+        /import\s+{\s*([^}]+)\s*}\s+from\s+['"]vue['"];?/g,
+        (match, imports) => {
+          const importList = imports.split(',').map(i => i.trim());
+          return importList.map(imp => {
+            // Handle "as" aliases and default imports
+            const parts = imp.split(' as ').map(p => p.trim());
+            const varName = parts[0];
+            const alias = parts[1] || parts[0];
+            const argIndex = vueImportMap[varName];
+            if (argIndex !== undefined) {
+              return `const ${alias} = arguments[${argIndex}];`;
+            }
+            // Fallback for unknown imports
+            return `const ${alias} = arguments[0]; // fallback for ${varName}`;
+          }).join('\n');
+        }
+      );
+      
+      // Inject Vue functions as function arguments
+      // The compiled code will reference these via arguments[0], arguments[1], etc.
+      compiledCode = `
+        ${compiledCode}
+      `;
+      
+      // Transform export statements to return the component
+      compiledCode = compiledCode.replace(
+        /export\s+default\s+([^;]+);?/,
+        'const __COMPONENT__ = $1;'
+      );
+      
+      // Wrap in a function that returns the component
+      const componentCode = `
+        ${compiledCode}
+        return typeof __COMPONENT__ !== 'undefined' ? __COMPONENT__ : null;
+      `;
+      
+      // Execute the transformed code
+      const getComponent = new Function(componentCode);
+      
+      const Component = getComponent(
+        h, createApp, ref, reactive, computed, watch, onMounted, onUnmounted, defineComponent
+      );
+      
+      if (!Component) {
+        console.error('Failed to extract component from compiled code');
+        alert('Failed to extract component from compiled code.');
+        return;
+      }
+
+      // 4. Extract props from the component
       propsSchema.value = extractProps(source);
 
       // Initialize prop values using defaults
@@ -153,16 +287,43 @@ export default {
         }
       }
 
-      // 4. Mount the component with the current prop values
+      // 5. Mount the component with the current prop values
       const mountEl = componentMount.value;
       mountEl.innerHTML = "";
 
+      // Clear any existing app instance
+      if (window.compiledAppInstance) {
+        window.compiledAppInstance.unmount();
+      }
+
+      // Store Component globally so we can re-render when props change
+      window.compiledComponent = Component;
+      
+      const renderComponent = () => {
+        return h(Component, propValues.value);
+      };
+
       const app = createApp({
-        render() {
-          return h(componentOptions, propValues.value);
-        },
+        render: renderComponent,
       });
+      
+      // Store app instance for cleanup and re-rendering
+      window.compiledAppInstance = app;
       app.mount(mountEl);
+      
+      // Watch propValues and re-render component when props change
+      watch(propValues, () => {
+        if (window.compiledAppInstance && window.compiledComponent) {
+          // Unmount and remount with new props
+          window.compiledAppInstance.unmount();
+          mountEl.innerHTML = "";
+          const newApp = createApp({
+            render: () => h(window.compiledComponent, propValues.value),
+          });
+          window.compiledAppInstance = newApp;
+          newApp.mount(mountEl);
+        }
+      }, { deep: true });
     }
 
     // TODO 2: Extract props from Vue component and convert to JSON Schema
